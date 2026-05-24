@@ -4768,39 +4768,42 @@ def sanitize_env_file() -> int:
 
 
 def _check_non_ascii_credential(key: str, value: str) -> str:
-    """Warn and strip non-ASCII characters from credential values.
+    """Warn and strip invalid header characters from credential values.
 
-    API keys and tokens must be pure ASCII — they are sent as HTTP header
-    values which httpx/httpcore encode as ASCII.  Non-ASCII characters
-    (commonly introduced by copy-pasting from rich-text editors or PDFs
-    that substitute lookalike Unicode glyphs for ASCII letters) cause
-    ``UnicodeEncodeError: 'ascii' codec can't encode character`` at
-    request time.
+    API keys and tokens are sent as HTTP header values, which RFC 7230
+    restricts to visible USASCII octets (0x21-0x7E) plus space.  Two
+    common pollution patterns break this and cause the receiving server
+    to reject the request with HTTP 400 before the body is parsed:
 
-    Returns the sanitized (ASCII-only) value.  Prints a warning if any
-    non-ASCII characters were found and removed.
+    - Non-ASCII glyphs (e.g. ʋ U+028B for v) from copy-pasting through
+      rich-text editors or PDFs.
+    - ASCII control bytes such as ESC ``\\x1b`` captured when typing the
+      key interactively and using arrow keys, which embed terminal
+      control sequences directly into the value.
+
+    Returns the sanitized value (visible USASCII only) and prints a
+    warning if any invalid characters were found and removed.
     """
-    try:
-        value.encode("ascii")
-        return value  # all ASCII — nothing to do
-    except UnicodeEncodeError:
-        pass
+    if all(0x20 <= ord(ch) <= 0x7E for ch in value):
+        return value  # all valid — nothing to do
 
     # Build a readable list of the offending characters
     bad_chars: list[str] = []
     for i, ch in enumerate(value):
-        if ord(ch) > 127:
+        if not (0x20 <= ord(ch) <= 0x7E):
             bad_chars.append(f"  position {i}: {ch!r} (U+{ord(ch):04X})")
-    sanitized = value.encode("ascii", errors="ignore").decode("ascii")
+    sanitized = "".join(ch for ch in value if 0x20 <= ord(ch) <= 0x7E)
 
     print(
-        f"\n  Warning: {key} contains non-ASCII characters that will break API requests.\n"
+        f"\n  Warning: {key} contains characters that will break API requests.\n"
         f"  This usually happens when copy-pasting from a PDF, rich-text editor,\n"
-        f"  or web page that substitutes lookalike Unicode glyphs for ASCII letters.\n"
+        f"  or web page that substitutes lookalike Unicode glyphs for ASCII letters,\n"
+        f"  OR when the key was typed interactively and captured terminal control\n"
+        f"  sequences (arrow keys, backspace) before the visible characters.\n"
         f"\n"
         + "\n".join(f"  {line}" for line in bad_chars[:5])
         + ("\n  ... and more" if len(bad_chars) > 5 else "")
-        + f"\n\n  The non-ASCII characters have been stripped automatically.\n"
+        + f"\n\n  The invalid characters have been stripped automatically.\n"
         f"  If authentication fails, re-copy the key from the provider's dashboard.\n",
         file=sys.stderr,
     )
